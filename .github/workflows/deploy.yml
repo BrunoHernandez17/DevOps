@@ -1,10 +1,7 @@
 # =============================================================================
-# PIPELINE CI/CD - Innovatech Chile
-# GitHub Actions Workflow
-# =============================================================================
-# DISPARADOR: Solo se activa cuando hay un push a la rama "deploy"
-# La rama "deploy" actua como rama de produccion (gitflow: main -> deploy)
-# Los desarrolladores trabajan en ramas feature/* y main, NUNCA en deploy directamente
+# PIPELINE CI/CD - Innovatech Chile (Despliegue via AWS Systems Manager SSM)
+# NO requiere llaves SSH ni abrir el puerto 22 publicamente
+# Usa las credenciales AWS del LabRole ya configurado en las instancias EC2
 # =============================================================================
 
 name: CI/CD - Build, Push y Deploy en EC2
@@ -14,22 +11,15 @@ on:
     branches:
       - deploy   # Unico disparador: push a la rama deploy
 
-# Variables de entorno globales reutilizadas en todos los jobs
 env:
-  # Nombre de usuario Docker Hub (viene del secret, usado para taggear imagenes)
-  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-  # Nombres de las imagenes en Docker Hub (formato: usuario/nombre-imagen)
   IMAGE_BACKEND:  ${{ secrets.DOCKER_USERNAME }}/innovatech-backend
   IMAGE_FRONTEND: ${{ secrets.DOCKER_USERNAME }}/innovatech-frontend
-  # Ruta remota en EC2 donde se desplegara el docker-compose.yml
-  REMOTE_DIR: /home/ec2-user/innovatech
 
 jobs:
 
   # ===========================================================================
   # JOB 1: BUILD & PUSH
-  # Compila las imagenes Docker y las publica en Docker Hub
-  # Corre en un runner de GitHub (ubuntu-latest), NO en nuestro EC2
+  # Compila las imagenes Docker y las sube a Docker Hub
   # ===========================================================================
   build-and-push:
     name: 🐳 Build y Push de Imagenes Docker
@@ -37,56 +27,30 @@ jobs:
 
     steps:
 
-      # -----------------------------------------------------------------------
-      # STEP 1: Checkout del codigo fuente
-      # Descarga el codigo del repositorio en el runner de GitHub
-      # -----------------------------------------------------------------------
       - name: 📥 Checkout del repositorio
         uses: actions/checkout@v4
 
-      # -----------------------------------------------------------------------
-      # STEP 2: Configurar Docker Buildx
-      # Habilita la construccion de imagenes multi-arquitectura (amd64/arm64)
-      # Necesario para garantizar compatibilidad con instancias EC2 ARM (Graviton)
-      # -----------------------------------------------------------------------
       - name: ⚙️ Configurar Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # -----------------------------------------------------------------------
-      # STEP 3: Login en Docker Hub
-      # Usa secrets encriptados de GitHub (NUNCA hardcodeados en el codigo)
-      # secrets.DOCKER_USERNAME -> usuario de Docker Hub
-      # secrets.DOCKER_PASSWORD -> token de acceso de Docker Hub (no la contraseña real)
-      # -----------------------------------------------------------------------
       - name: 🔐 Login en Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # -----------------------------------------------------------------------
-      # STEP 4: Build y Push de la imagen del BACKEND
-      # Construye desde back-Ventas_SpringBoot/Springboot-API-REST/Dockerfile
-      # Taggeamos con el SHA del commit para trazabilidad total
-      # -----------------------------------------------------------------------
       - name: 🔨 Build y Push - Backend (Spring Boot)
         uses: docker/build-push-action@v5
         with:
           context: ./back-Ventas_SpringBoot/Springboot-API-REST
           dockerfile: ./back-Ventas_SpringBoot/Springboot-API-REST/Dockerfile
           push: true
-          # Tags multiples: "latest" para produccion + SHA del commit para rollback
           tags: |
             ${{ env.IMAGE_BACKEND }}:latest
             ${{ env.IMAGE_BACKEND }}:${{ github.sha }}
-          # Cache de capas de Docker entre builds consecutivos (acelera el pipeline)
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # -----------------------------------------------------------------------
-      # STEP 5: Build y Push de la imagen del FRONTEND
-      # Construye desde front_despacho/Dockerfile (Node build + Nginx unprivileged)
-      # -----------------------------------------------------------------------
       - name: 🔨 Build y Push - Frontend (React + Nginx)
         uses: docker/build-push-action@v5
         with:
@@ -100,87 +64,110 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ===========================================================================
-  # JOB 2: DEPLOY
-  # Se ejecuta SOLO si el job anterior (build-and-push) termino exitosamente
-  # Se conecta a la instancia EC2 via SSH y actualiza los contenedores
+  # JOB 2: DEPLOY VIA AWS SSM
+  # Se conecta a la instancia EC2 a traves de AWS Systems Manager
+  # NO abre puertos SSH, NO requiere llaves .pem
+  # El LabRole ya instalado en la instancia permite recibir comandos SSM
   # ===========================================================================
   deploy:
-    name: 🚀 Deploy Automatico en EC2
+    name: 🚀 Deploy Automatico en EC2 via SSM
     runs-on: ubuntu-latest
-    needs: build-and-push   # Dependencia: no desplegamos si el build falla
+    needs: build-and-push
 
     steps:
 
-      # -----------------------------------------------------------------------
-      # STEP 1: Checkout (necesario para obtener el docker-compose.yml)
-      # -----------------------------------------------------------------------
       - name: 📥 Checkout del repositorio
         uses: actions/checkout@v4
 
       # -----------------------------------------------------------------------
-      # STEP 2: Copiar docker-compose.yml a la instancia EC2 via SCP
-      # Usamos la clave SSH privada almacenada en secrets (nunca en el repo)
-      # secrets.EC2_HOST     -> IP publica o DNS de la instancia ec2-web
-      # secrets.EC2_USER     -> Usuario SSH (ec2-user para Amazon Linux)
-      # secrets.EC2_SSH_KEY  -> Clave privada .pem en formato texto plano
+      # Configura las credenciales AWS en el runner de GitHub
+      # Permite usar el CLI de AWS para enviar comandos SSM
+      # secrets.AWS_ACCESS_KEY_ID      -> Clave de acceso AWS Academy
+      # secrets.AWS_SECRET_ACCESS_KEY  -> Clave secreta AWS Academy
+      # secrets.AWS_SESSION_TOKEN      -> Token de sesion (requerido en Academy)
       # -----------------------------------------------------------------------
-      - name: 📂 Copiar docker-compose.yml a EC2
-        uses: appleboy/scp-action@v0.1.7
+      - name: 🔑 Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          source: "docker-compose.yml"
-          target: ${{ env.REMOTE_DIR }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            us-east-1
 
       # -----------------------------------------------------------------------
-      # STEP 3: Ejecutar comandos de despliegue en EC2 via SSH
-      # Conecta a la instancia, descarga las nuevas imagenes y reinicia servicios
-      # "docker compose pull" descarga las nuevas imagenes desde Docker Hub
-      # "docker compose up -d" actualiza los contenedores sin tiempo de inactividad
-      # "--remove-orphans" elimina contenedores de servicios que ya no existen
+      # Envia el archivo docker-compose.prod.yml a EC2 y ejecuta el despliegue
+      # usando AWS SSM Send-Command (equivalente a SSH pero sin claves ni puertos)
+      # secrets.EC2_WEB_INSTANCE_ID -> ID de la instancia ec2-web (ej: i-0abc123...)
       # -----------------------------------------------------------------------
-      - name: 🔄 Deploy en EC2 (pull + restart)
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            # Ir al directorio del proyecto en EC2
-            cd ${{ env.REMOTE_DIR }}
+      - name: 🚀 Deploy via AWS SSM Send-Command
+        env:
+          DOCKER_USER:  ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASS:  ${{ secrets.DOCKER_PASSWORD }}
+          DB_ROOT:      ${{ secrets.DB_ROOT_PASSWORD }}
+          DB_PASS:      ${{ secrets.DB_PASSWORD }}
+          INSTANCE_ID:  ${{ secrets.EC2_WEB_INSTANCE_ID }}
+        run: |
+          # Sustituir el nombre de usuario en el compose de produccion y codificarlo
+          # en base64 para poder transferirlo de forma segura via SSM (sin problemas
+          # de caracteres especiales en el payload JSON)
+          sed "s|\${DOCKER_USERNAME}|$DOCKER_USER|g" docker-compose.prod.yml > /tmp/compose-final.yml
+          COMPOSE_B64=$(base64 -w 0 /tmp/compose-final.yml)
 
-            # Crear archivo .env con las variables sensibles (inyectadas desde GitHub Secrets)
-            # Las credenciales NUNCA se escriben directamente en docker-compose.yml
-            echo "MYSQL_ROOT_PASSWORD=${{ secrets.DB_ROOT_PASSWORD }}" > .env
-            echo "MYSQL_PASSWORD=${{ secrets.DB_PASSWORD }}"          >> .env
-            echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}"             >> .env
-            echo "DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}"     >> .env
+          # Construir el JSON del comando SSM usando jq para evitar problemas
+          # de escapado de caracteres especiales en el shell
+          jq -n \
+            --arg instance  "$INSTANCE_ID"  \
+            --arg compose   "$COMPOSE_B64"  \
+            --arg duser     "$DOCKER_USER"  \
+            --arg dpass     "$DOCKER_PASS"  \
+            --arg db_root   "$DB_ROOT"      \
+            --arg db_pass   "$DB_PASS"      \
+            '{
+              "InstanceIds": [$instance],
+              "DocumentName": "AWS-RunShellScript",
+              "Comment": "Deploy Innovatech CI/CD",
+              "Parameters": {
+                "commands": [
+                  "mkdir -p /home/ec2-user/innovatech",
+                  "cd /home/ec2-user/innovatech",
+                  ("printf \"%s\" \"" + $compose + "\" | base64 -d > docker-compose.yml"),
+                  ("printf \"MYSQL_ROOT_PASSWORD=" + $db_root + "\nMYSQL_PASSWORD=" + $db_pass + "\nDB_PASSWORD=" + $db_pass + "\nDOCKER_USERNAME=" + $duser + "\n\" > .env"),
+                  ("echo \"" + $dpass + "\" | docker login -u \"" + $duser + "\" --password-stdin"),
+                  "docker compose pull",
+                  "docker compose up -d --remove-orphans",
+                  "docker image prune -f",
+                  "docker compose ps"
+                ]
+              }
+            }' > /tmp/ssm-input.json
 
-            # Login en Docker Hub desde EC2 para poder hacer pull de imagenes privadas
-            echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          # Enviar el comando a la instancia EC2 y capturar el Command ID
+          COMMAND_ID=$(aws ssm send-command \
+            --cli-input-json file:///tmp/ssm-input.json \
+            --query "Command.CommandId" \
+            --output text)
 
-            # Descargar las nuevas imagenes publicadas en el job anterior
-            docker compose pull
+          echo "📋 SSM Command ID: $COMMAND_ID"
 
-            # Levantar/actualizar los contenedores en modo detached (background)
-            # Solo los contenedores cuya imagen cambio son recreados (zero downtime)
-            docker compose up -d --remove-orphans
+          # Esperar a que el comando termine en la instancia EC2 (max ~3 minutos)
+          echo "⏳ Esperando que el deploy termine en EC2..."
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" || true
 
-            # Verificar el estado final de los contenedores
-            docker compose ps
+          # Mostrar el resultado del comando ejecutado en EC2 (para los logs del pipeline)
+          echo "📄 Output del deploy en EC2:"
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "StandardOutputContent" \
+            --output text
 
-            # Limpiar imagenes antiguas para liberar espacio en disco del EC2
-            docker image prune -f
-
-      # -----------------------------------------------------------------------
-      # STEP 4: Notificacion del resultado del deploy
-      # -----------------------------------------------------------------------
       - name: ✅ Deploy completado
         run: |
           echo "=========================================="
-          echo "  Deploy exitoso en EC2!"
-          echo "  Commit: ${{ github.sha }}"
-          echo "  Rama:   ${{ github.ref_name }}"
-          echo "  Actor:  ${{ github.actor }}"
+          echo "  ✅ Deploy exitoso en EC2!"
+          echo "  Commit : ${{ github.sha }}"
+          echo "  Rama   : ${{ github.ref_name }}"
+          echo "  Actor  : ${{ github.actor }}"
           echo "=========================================="
