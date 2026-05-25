@@ -1,0 +1,148 @@
+# =============================================================================
+# DOCKER COMPOSE - Proyecto Innovatech Chile
+# Orquesta 3 servicios: base de datos, backend Spring Boot y frontend React/Nginx
+# Implementa aislamiento de red por capas (igual que la arquitectura AWS de 3 capas)
+# =============================================================================
+
+services:
+
+  # ===========================================================================
+  # SERVICIO 1: Base de Datos (MySQL 8.0)
+  # Ubicado SOLO en backend_network -> el frontend NO puede acceder directamente
+  # Equivale a la instancia ec2-datos en subred privada de AWS
+  # ===========================================================================
+  db:
+    image: mysql:8.0
+    container_name: innovatech-db
+    restart: unless-stopped
+
+    environment:
+      # Credenciales y nombre de base de datos
+      # En produccion (EC2), estos valores vienen de variables de entorno del host
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: ventas_db
+      MYSQL_USER: springuser
+      MYSQL_PASSWORD: springpassword
+
+    ports:
+      # Exponemos el puerto 3306 al host SOLO para desarrollo local y depuracion
+      # En AWS, el SG-DATOS bloquea este puerto a cualquier origen que no sea SG-APP
+      - "3306:3306"
+
+    volumes:
+      # Volumen con nombre para persistencia de datos
+      # Los datos de MySQL sobreviven reinicios del contenedor y actualizaciones de imagen
+      # Sin este volumen, cada "docker compose down" borraria toda la base de datos
+      - db_data:/var/lib/mysql
+
+    networks:
+      # La DB SOLO esta en la red del backend
+      # El contenedor "frontend" no puede ver ni hacer ping a este servicio
+      - backend_network
+
+    healthcheck:
+      # Docker espera a que MySQL este listo antes de iniciar el backend
+      # Evita el error "Connection refused" cuando Spring Boot arranca antes que MySQL
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpassword"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ===========================================================================
+  # SERVICIO 2: Backend (Spring Boot - API REST Ventas)
+  # Puente entre las dos redes: puede hablar con la DB y con el Frontend
+  # Equivale a la instancia ec2-app en subred privada de AWS
+  # ===========================================================================
+  backend:
+    build:
+      # Ruta al Dockerfile del backend
+      context: ./back-Ventas_SpringBoot/Springboot-API-REST
+      dockerfile: Dockerfile
+    container_name: innovatech-backend
+    restart: unless-stopped
+
+    environment:
+      # Variables de entorno que Spring Boot lee desde application.properties
+      # ${DB_ENDPOINT} -> nombre del servicio "db" (Docker resuelve el DNS interno)
+      DB_ENDPOINT: db
+      DB_PORT: 3306
+      DB_NAME: ventas_db
+      DB_USERNAME: springuser
+      DB_PASSWORD: springpassword
+      # Forzamos a Spring Boot a escuchar en el puerto 3001
+      # Coincide con el puerto que nginx.conf del frontend usa para el proxy reverso
+      SERVER_PORT: 3001
+
+    ports:
+      # Mapeamos el puerto 3001 del contenedor al puerto 3001 del host
+      # Permite probar la API directamente: http://localhost:3001/api/v1/ventas
+      - "3001:3001"
+
+    networks:
+      # El backend esta en AMBAS redes:
+      # - frontend_network: para recibir peticiones del proxy de Nginx
+      # - backend_network: para conectarse a la base de datos MySQL
+      - frontend_network
+      - backend_network
+
+    depends_on:
+      db:
+        # El backend espera a que el healthcheck de la DB pase antes de iniciar
+        condition: service_healthy
+
+  # ===========================================================================
+  # SERVICIO 3: Frontend (React + Nginx como Reverse Proxy)
+  # Expuesto al exterior: unico punto de entrada desde internet
+  # Equivale a la instancia ec2-web en subred publica de AWS
+  # ===========================================================================
+  frontend:
+    build:
+      # Ruta al Dockerfile del frontend (multi-stage con Node + Nginx)
+      context: ./front_despacho
+      dockerfile: Dockerfile
+    container_name: innovatech-frontend
+    restart: unless-stopped
+
+    ports:
+      # El mundo exterior accede al puerto 80 del host
+      # Nginx dentro del contenedor escucha en el puerto 8080 (no root)
+      - "80:8080"
+
+    networks:
+      # El frontend SOLO esta en la red del frontend
+      # NO puede ver ni conectarse directamente al contenedor de la DB
+      # Solo puede comunicarse con el backend a traves de frontend_network
+      - frontend_network
+
+    depends_on:
+      - backend
+
+# =============================================================================
+# REDES INTERNAS (Aislamiento por capas)
+# Replica la segmentacion de subredes publicas/privadas de la VPC en AWS
+# =============================================================================
+networks:
+
+  frontend_network:
+    # Red compartida entre frontend y backend
+    # El frontend puede resolver el nombre DNS "backend" en esta red
+    driver: bridge
+    name: innovatech-frontend-net
+
+  backend_network:
+    # Red compartida entre backend y base de datos
+    # El frontend NO esta en esta red -> aislamiento total
+    driver: bridge
+    name: innovatech-backend-net
+
+# =============================================================================
+# VOLUMENES PERSISTENTES
+# Garantizan que los datos no se pierdan ante reinicios o actualizaciones
+# En AWS, esto equivale a un volumen EBS montado en ec2-datos
+# =============================================================================
+volumes:
+  db_data:
+    # Volumen gestionado por Docker en el filesystem local del host EC2
+    # Ruta real en el host: /var/lib/docker/volumes/db_data/_data
+    name: innovatech-db-data
