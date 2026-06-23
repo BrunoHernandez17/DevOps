@@ -20,4 +20,5 @@ Thumbs.db
 
 # Automation Scripts
 configure_secrets.py
+generate_ppt.py
 
