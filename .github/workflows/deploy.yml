@@ -44,7 +44,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./back-Ventas_SpringBoot/Springboot-API-REST
-          dockerfile: ./back-Ventas_SpringBoot/Springboot-API-REST/Dockerfile
+          file: ./back-Ventas_SpringBoot/Springboot-API-REST/Dockerfile
           push: true
           tags: |
             ${{ env.IMAGE_BACKEND }}:latest
@@ -56,7 +56,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./front_despacho
-          dockerfile: ./front_despacho/Dockerfile
+          file: ./front_despacho/Dockerfile
           push: true
           tags: |
             ${{ env.IMAGE_FRONTEND }}:latest
@@ -93,7 +93,7 @@ jobs:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region:            us-west-2
+          aws-region:            us-east-1
 
       # -----------------------------------------------------------------------
       # Envia el archivo docker-compose.prod.yml a EC2 y ejecuta el despliegue
