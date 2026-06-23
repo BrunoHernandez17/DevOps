@@ -9,7 +9,9 @@ name: CI/CD - Build, Push y Deploy en EC2
 on:
   push:
     branches:
-      - deploy   # Unico disparador: push a la rama deploy
+      - deploy   # Disparador: push a la rama deploy
+    tags:
+      - 'v*'     # Disparador: push a tags semanticos (ej: v1.0.3)
   workflow_dispatch: # Permite disparar el workflow manualmente desde la web de GitHub
 
 env:
@@ -19,17 +21,81 @@ env:
 jobs:
 
   # ===========================================================================
-  # JOB 1: BUILD & PUSH
-  # Compila las imagenes Docker y las sube a Docker Hub
+  # JOB 1: VALIDACION DE SINTAXIS (YAML Linter)
+  # Evita fallos de sintaxis antes de compilar
+  # ===========================================================================
+  lint-yaml:
+    name: 🔍 Validar Archivos YAML
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: 🐍 Validar sintaxis YAML
+        run: |
+          python3 -c "
+          import yaml, glob, sys
+          failed = False
+          for f in glob.glob('**/*.yml', recursive=True) + glob.glob('**/*.yaml', recursive=True):
+              if 'node_modules' in f: continue
+              print(f'Validando: {f} ... ', end='')
+              try:
+                  with open(f) as file:
+                      yaml.safe_load(file)
+                  print('OK')
+              except Exception as e:
+                  print(f'ERROR: {e}')
+                  failed = True
+          if failed:
+              sys.exit(1)
+          "
+
+  # ===========================================================================
+  # JOB 2: PRUEBAS AUTOMATIZADAS Y CACHE
+  # Ejecuta pruebas unitarias del backend usando Java y cachea dependencias Maven
+  # ===========================================================================
+  test-backend:
+    name: 🧪 Pruebas Unitarias Backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: ☕ Configurar Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'  # Cachea las dependencias descargadas de Maven (.m2)
+
+      - name: 🧪 Ejecutar Pruebas Maven
+        run: |
+          cd back-Ventas_SpringBoot/Springboot-API-REST
+          mvn test -B
+
+  # ===========================================================================
+  # JOB 3: BUILD & PUSH
+  # Compila las imagenes Docker, cachea capas y las sube a Docker Hub
   # ===========================================================================
   build-and-push:
     name: 🐳 Build y Push de Imagenes Docker
     runs-on: ubuntu-latest
+    needs: [lint-yaml, test-backend]
 
     steps:
-
       - name: 📥 Checkout del repositorio
         uses: actions/checkout@v4
+
+      - name: 🏷️ Determinar Tag de Version Semantica
+        id: get_version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "IS_TAG=true" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=latest" >> $GITHUB_OUTPUT
+            echo "IS_TAG=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: ⚙️ Configurar Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -49,6 +115,7 @@ jobs:
           tags: |
             ${{ env.IMAGE_BACKEND }}:latest
             ${{ env.IMAGE_BACKEND }}:${{ github.sha }}
+            ${{ steps.get_version.outputs.IS_TAG == 'true' && format('{0}:{1}', env.IMAGE_BACKEND, steps.get_version.outputs.VERSION) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -61,14 +128,12 @@ jobs:
           tags: |
             ${{ env.IMAGE_FRONTEND }}:latest
             ${{ env.IMAGE_FRONTEND }}:${{ github.sha }}
+            ${{ steps.get_version.outputs.IS_TAG == 'true' && format('{0}:{1}', env.IMAGE_FRONTEND, steps.get_version.outputs.VERSION) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   # ===========================================================================
-  # JOB 2: DEPLOY VIA AWS SSM
-  # Se conecta a la instancia EC2 a traves de AWS Systems Manager
-  # NO abre puertos SSH, NO requiere llaves .pem
-  # El LabRole ya instalado en la instancia permite recibir comandos SSM
+  # JOB 4: DEPLOY VIA AWS SSM
   # ===========================================================================
   deploy:
     name: 🚀 Deploy Automatico en EC2 via SSM
@@ -76,16 +141,11 @@ jobs:
     needs: build-and-push
 
     steps:
-
       - name: 📥 Checkout del repositorio
         uses: actions/checkout@v4
 
       # -----------------------------------------------------------------------
       # Configura las credenciales AWS en el runner de GitHub
-      # Permite usar el CLI de AWS para enviar comandos SSM
-      # secrets.AWS_ACCESS_KEY_ID      -> Clave de acceso AWS Academy
-      # secrets.AWS_SECRET_ACCESS_KEY  -> Clave secreta AWS Academy
-      # secrets.AWS_SESSION_TOKEN      -> Token de sesion (requerido en Academy)
       # -----------------------------------------------------------------------
       - name: 🔑 Configurar credenciales AWS
         uses: aws-actions/configure-aws-credentials@v4
@@ -97,8 +157,6 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Envia el archivo docker-compose.prod.yml a EC2 y ejecuta el despliegue
-      # usando AWS SSM Send-Command (equivalente a SSH pero sin claves ni puertos)
-      # secrets.EC2_WEB_INSTANCE_ID -> ID de la instancia ec2-web (ej: i-0abc123...)
       # -----------------------------------------------------------------------
       - name: 🚀 Deploy via AWS SSM Send-Command
         env:
@@ -108,14 +166,9 @@ jobs:
           DB_PASS:      ${{ secrets.DB_PASSWORD }}
           INSTANCE_ID:  ${{ secrets.EC2_WEB_INSTANCE_ID }}
         run: |
-          # Sustituir el nombre de usuario en el compose de produccion y codificarlo
-          # en base64 para poder transferirlo de forma segura via SSM (sin problemas
-          # de caracteres especiales en el payload JSON)
           sed "s|\${DOCKER_USERNAME}|$DOCKER_USER|g" docker-compose.prod.yml > /tmp/compose-final.yml
           COMPOSE_B64=$(base64 -w 0 /tmp/compose-final.yml)
 
-          # Construir el JSON del comando SSM usando jq para evitar problemas
-          # de escapado de caracteres especiales en el shell
           jq -n \
             --arg instance  "$INSTANCE_ID"  \
             --arg compose   "$COMPOSE_B64"  \
@@ -172,4 +225,3 @@ jobs:
           echo "  Rama   : ${{ github.ref_name }}"
           echo "  Actor  : ${{ github.actor }}"
           echo "=========================================="
-
