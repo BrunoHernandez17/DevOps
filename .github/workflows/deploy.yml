@@ -10,6 +10,7 @@ on:
   push:
     branches:
       - deploy   # Unico disparador: push a la rama deploy
+  workflow_dispatch: # Permite disparar el workflow manualmente desde la web de GitHub
 
 env:
   IMAGE_BACKEND:  ${{ secrets.DOCKER_USERNAME }}/innovatech-backend
