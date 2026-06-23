@@ -51,8 +51,8 @@ COPY nginx.conf /etc/nginx/nginx.conf
 COPY --from=builder /app/dist /usr/share/nginx/html
 
 # Documentamos el puerto en que corre el servicio dentro del contenedor
-# El mapeo real (host:80 -> contenedor:8080) se define en docker-compose.yml
-EXPOSE 8080
+# El mapeo real (host:80 -> contenedor:3000) se define en docker-compose.yml
+EXPOSE 3000
 
 # La imagen nginxinc/nginx-unprivileged ya define el CMD correcto para iniciar Nginx
 # No necesitamos redefinirlo aqui
