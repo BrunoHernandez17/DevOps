@@ -90,11 +90,11 @@ jobs:
         id: get_version
         run: |
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-            echo "IS_TAG=true" >> $GITHUB_OUTPUT
+            echo "TAGS=${{ env.IMAGE_BACKEND }}:latest,${{ env.IMAGE_BACKEND }}:${{ github.sha }},${{ env.IMAGE_BACKEND }}:${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "FRONT_TAGS=${{ env.IMAGE_FRONTEND }}:latest,${{ env.IMAGE_FRONTEND }}:${{ github.sha }},${{ env.IMAGE_FRONTEND }}:${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
-            echo "VERSION=latest" >> $GITHUB_OUTPUT
-            echo "IS_TAG=false" >> $GITHUB_OUTPUT
+            echo "TAGS=${{ env.IMAGE_BACKEND }}:latest,${{ env.IMAGE_BACKEND }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+            echo "FRONT_TAGS=${{ env.IMAGE_FRONTEND }}:latest,${{ env.IMAGE_FRONTEND }}:${{ github.sha }}" >> $GITHUB_OUTPUT
           fi
 
       - name: ⚙️ Configurar Docker Buildx
@@ -112,10 +112,7 @@ jobs:
           context: ./back-Ventas_SpringBoot/Springboot-API-REST
           file: ./back-Ventas_SpringBoot/Springboot-API-REST/Dockerfile
           push: true
-          tags: |
-            ${{ env.IMAGE_BACKEND }}:latest
-            ${{ env.IMAGE_BACKEND }}:${{ github.sha }}
-            ${{ steps.get_version.outputs.IS_TAG == 'true' && format('{0}:{1}', env.IMAGE_BACKEND, steps.get_version.outputs.VERSION) || '' }}
+          tags: ${{ steps.get_version.outputs.TAGS }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -125,10 +122,7 @@ jobs:
           context: ./front_despacho
           file: ./front_despacho/Dockerfile
           push: true
-          tags: |
-            ${{ env.IMAGE_FRONTEND }}:latest
-            ${{ env.IMAGE_FRONTEND }}:${{ github.sha }}
-            ${{ steps.get_version.outputs.IS_TAG == 'true' && format('{0}:{1}', env.IMAGE_FRONTEND, steps.get_version.outputs.VERSION) || '' }}
+          tags: ${{ steps.get_version.outputs.FRONT_TAGS }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
